@@ -9,20 +9,17 @@ library(tidyverse); library(tidyquant); library(gt)
 # estoca <- readr::read_csv(stk) %>% janitor::clean_names() %>% filter( nome_da_loja != 'Olist')
 
 
-estoca_g %>%
-    group_by(seller_type) %>%
-    summarise(across(where(is.numeric), sum))
 
-mr <- "data-raw/SKUs___GTINs_(Orders,_Quotes_&_Stock)_[1P_FBO]_2022_03_10.csv"
+mr <- "data-raw/SKUs___GTINs_(Orders,_Quotes_&_Stock)_[1P_FBO]_2022_03_11.csv"
+
 marcos <- readr::read_csv(mr) %>% janitor::clean_names()
 
 
+estoca_group <- "data-raw/Estoca_G(2022-03-11).csv"
 
-estoca_group <- "data-raw/Estoca_G(2022-03-10).csv"
 estoca_g <- readr::read_csv(estoca_group) %>%
     janitor::clean_names() %>% filter( !nome_da_loja %in%
     c('Olist', 'Olist 2', 'Outlet Olist', 'H2O Purificadores (Olist)') ) %>%
-    mutate( stock = disponivel - bloqueado) %>%
     mutate( seller_type =
                 case_when(
                     nome_da_loja == "Olist (Protheus)" ~ "1P-Barueri",
@@ -31,9 +28,21 @@ estoca_g <- readr::read_csv(estoca_group) %>%
 rm(mr)
 rm(estoca_group)
 
+# Resumo Estoca
 estoca_g %>%
-    select( nome_da_loja, nome_do_item, sku, codigo_de_barras, disponivel, seller_type) %>%
-    clipr::write_clip()
+    group_by(seller_type) %>%
+    summarise(across(
+        .cols = where(is.character),
+        .fns = n_distinct ),
+        across(
+            .cols = where(is.numeric),
+            .fns = sum
+        )
+    ) %>% mutate( vendas_7d = round(vendas / 7), 0,
+                  dias_stock = round(disponivel / vendas_7d, 0) ) %>%
+    select( seller_type, nome_da_loja, sku, "stock_disponivel" = disponivel, vendas_7d,
+            dias_stock, no_estoque, bloqueado, reservado , codigo_de_barras, vendas ) %>%
+    janitor::adorn_totals()
 
 # ETL_marcos --------------------------------------------------------------
 
@@ -526,7 +535,7 @@ tabela_sales_sellers %>%
     gt::fmt_number( columns = starts_with("GMV"),
                     locale = "pt_BR", scale_by = 1e-3, suffixing = "k")
 
-tabela_sales_sellers %>% writexl::write_xlsx("Sales_last30d_FBO_2022-03-02.xlsx")
+# tabela_sales_sellers %>% writexl::write_xlsx("Sales_last30d_FBO_2022-03-02.xlsx")
 
 
 # Sales 3P FBO table Javi -------------------------------------------------
@@ -570,7 +579,7 @@ third_party %>% select(seller_product_id, brand, product_sku  , product_name, "s
                 dif > 0 ~ "sobra",
                 dif < 0 ~ "falta") ) %>%
     filter( status != "OK", saldo_webapp == 0) %>% arrange(desc(dif)) %>%
-    filter(dif>0) %>% view()
+    filter(dif>0) %>% gt() %>%  gt::tab_header("")
 select( product_sku) %>% pull() %>% clipr::write_clip()
 
 
