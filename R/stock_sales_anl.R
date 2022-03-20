@@ -10,12 +10,14 @@ library(tidyverse); library(tidyquant); library(gt)
 
 
 
-mr <- "data-raw/SKUs___GTINs_(Orders,_Quotes_&_Stock)_[1P_FBO]_2022_03_11.csv"
+mr <- "data-raw/SKUs___GTINs_(Orders,_Quotes_&_Stock)_[1P_FBO]_2022_03_17.csv"
 
 marcos <- readr::read_csv(mr) %>% janitor::clean_names()
 
 
-estoca_group <- "data-raw/Estoca_G(2022-03-11).csv"
+
+
+estoca_group <- "data-raw/Estoca_G(2022-03-17).csv"
 
 estoca_g <- readr::read_csv(estoca_group) %>%
     janitor::clean_names() %>% filter( !nome_da_loja %in%
@@ -36,11 +38,11 @@ estoca_g %>%
         .fns = n_distinct ),
         across(
             .cols = where(is.numeric),
-            .fns = sum
-        )
-    ) %>% mutate( vendas_7d = round(vendas / 7), 0,
+            .fns = sum ),
+        sku_liquido = n_distinct(sku[disponivel >0] )     ) %>%
+       mutate( vendas_7d = round(vendas / 7), 0,
                   dias_stock = round(disponivel / vendas_7d, 0) ) %>%
-    select( seller_type, nome_da_loja, sku, "stock_disponivel" = disponivel, vendas_7d,
+    select( seller_type, nome_da_loja, sku_liquido, sku, "stock_disponivel" = disponivel, vendas_7d,
             dias_stock, no_estoque, bloqueado, reservado , codigo_de_barras, vendas ) %>%
     janitor::adorn_totals()
 
@@ -76,6 +78,12 @@ marcos_etl <- marcos %>%
                                            "91to120","121to180","over_180","WithoutSales","StockOut")
         ) )
 
+stk_etl %>%
+    filter( seller_type =='1P-Serra', stock >0) %>% select(stock) %>%
+   count(stock, wt = stock) %>% clipr::write_clip()
+
+stk_etl %>%
+    filter( seller_type =='1P-Serra', stock >0) %>% select(stock) %>% sum
 
 # vendas macro ------------------------------------------------------------
 
@@ -99,6 +107,16 @@ stk_etl <- olist_stk %>%
         )
     )
     # filter( product_sku != 'PRDF0VEEPPMMNTXJ')
+
+
+
+# Sellers Ativos Douglas --------------------------------------------------
+
+third_party %>%
+    select(seller_id, brand, stock_update_at) %>%
+    group_by(seller_id, brand) %>%
+    summarise( min_date = min(stock_update_at)) %>% clipr::write_clip()
+
 
 stk_etl %>%
     mutate( tipe_sales = ifelse( dias_stock_gmv=="WithoutSales", "WhithoutSales", "Others")) %>%
@@ -124,13 +142,14 @@ estoca_g %>%
     ungroup() %>%
     group_by(seller_type) %>%
     # filter( nome_da_loja != 'Olist (Protheus)') %>%
-    summarise(  Seller_3P = n_distinct(nome_da_loja[stock > 0 ]),
+    summarise(  Seller_3P = n_distinct(nome_da_loja[disponivel > 0 ]),
                 Sellers_Stock_Out = n_distinct(nome_da_loja[disponivel_total ==0]),
                 Seller_liq_Sales_7d = n_distinct(nome_da_loja[vendas>0]),SKU_total = n_distinct(sku),
-                SKU_Disponivel = n_distinct(sku[stock > 0]),
+                SKU_liquido_last7d = n_distinct( sku[vendas>0]),
+                SKU_Disponivel = n_distinct(sku[disponivel > 0]),
                 SKU_Stock_Out = n_distinct(sku[disponivel== 0 & bloqueado== 0]),
                 SKU_bloqueado = n_distinct(sku[disponivel== 0 & bloqueado>=1]),
-                Unit_stock_disp = sum(stock),
+                Unit_stock_disp = sum(disponivel),
 
                 Sales_last_7d_avg = round(sum(vendas) / 7, 0),
                 .groups = "drop") %>%
@@ -142,7 +161,7 @@ estoca_g %>%
                         SKU_liquido_30d = n_distinct( product_sku[sku_items>0])
             ) %>%
             filter(seller_type != '1P-Serra')
-    ) %>% janitor::adorn_totals() %>%
+    , by = "seller_type") %>% janitor::adorn_totals() %>%
     gt::gt() %>%
     gt::tab_header("Touch Point FBO - Barueri") %>%
     fmt_currency(columns = Valor, currency = "BRL")
@@ -215,7 +234,7 @@ stk_etl %>%
     )
 # Estoque por tipo (3P vs 1P) Estoca
 estoca_g %>%
-    count( seller_type, wt = stock, name = "stock") %>%
+    count( seller_type, wt = disponivel, name = "stock") %>%
     janitor::adorn_percentages(denominator = "col") %>%
     janitor::adorn_pct_formatting(digits = 0) %>%
     janitor::adorn_ns(position = "front")
@@ -497,8 +516,16 @@ tabela_sales_sellers %>%
     # writexl::write_xlsx("Sales_FBO_last_30d.xlsx")
     gt() %>%
     gt::tab_header("Table Sellers Dias Stock") %>%
+    # data_color(
+    #     columns = vars(`00to05`:`31to45`),
+    #     colors = scales::col_numeric(
+    #         palette = c(
+    #             "#0C29D0"),
+    #         domain = NULL)
+    # ) %>%
+    #
     data_color(
-        columns = vars(`00to05`:`31to45`),
+        columns = vars(`06to15`:`31to45`),
         colors = scales::col_numeric(
             palette = c(
                 "#0C29D0"),
@@ -566,7 +593,7 @@ stk_etl %>%
 
 # WEB APP vs Estoca ------------------------------------------------
 
-third_party %>% select(seller_product_id, brand, product_sku  , product_name, "saldo_webapp"=stock) %>%
+third_party %>% select(seller_id, brand, product_sku  , product_name, "saldo_webapp"=stock) %>%
     full_join(
         estoca_g %>%
             filter( str_detect(nome_da_loja, "(FBO)")) %>%
@@ -579,8 +606,10 @@ third_party %>% select(seller_product_id, brand, product_sku  , product_name, "s
                 dif > 0 ~ "sobra",
                 dif < 0 ~ "falta") ) %>%
     filter( status != "OK", saldo_webapp == 0) %>% arrange(desc(dif)) %>%
-    filter(dif>0) %>% gt() %>%  gt::tab_header("")
-select( product_sku) %>% pull() %>% clipr::write_clip()
+    filter(dif>0)
+
+ # gt() %>%  gt::tab_header("")
+# select( product_sku) %>% pull() %>% clipr::write_clip()
 
 
 marcos %>%
@@ -588,9 +617,9 @@ marcos %>%
 # Barcode Duple -----------------------------------------
 
 estoca_g %>%
-    filter(stock>0) %>%
+    filter(disponivel>0) %>%
     janitor::get_dupes(codigo_de_barras) %>%
-    select(nome_da_loja, nome_do_item, codigo_de_barras,sku, stock) %>%
+    select(nome_da_loja, nome_do_item, codigo_de_barras,sku, disponivel) %>%
     arrange(codigo_de_barras) %>%
     gt::gt() %>%
     gt::tab_header( "Codigo barras SKU duplicados")
@@ -612,7 +641,7 @@ plotly::ggplotly(g)
 
 # ESTOCA POR ADDRESS ------------------------------------------------------
 
-estoca_address <- '../../../../joel.souza/Downloads/Estoca_ads_(2022-02-24).csv'
+estoca_address <- 'data-raw/Estoca_ads(2022-03-17).csv'
 
 estoca_add <- readr::read_csv(estoca_address) %>%
     janitor::clean_names() %>% filter( !nome_da_loja %in%
@@ -624,19 +653,28 @@ estoca_add <- readr::read_csv(estoca_address) %>%
 
 # Valorizando Stock Address
 
+
+estoca_add %>%
+
+
+
+
+
 estoca_add %>%
     summarise(n_distinct( nome_da_loja))
 
 estoca_add_etl <- estoca_add %>%
     left_join( stk_etl %>% select(product_sku, price),
                by = c("sku"="product_sku")) %>%
-    mutate( area = stringr::str_sub(
-        string = local,
-        start = 1,
-        end = 2),
-        valor_total = cd_olist_barueri_no_estoque * price) %>%
-    select( seller_type, "seller"=nome_da_loja, "produto"=nome_do_item, sku,
-            "barcode"=codigo_de_barras, area, local,
+    tidyr::separate( col = local, sep = "-", into = c("area", "rua", "predio", "nivel", "apto"), remove = F) %>%
+    filter(!is.na(apto)) %>%
+    mutate(
+        valor_total = cd_olist_barueri_no_estoque * price,
+        rua =  as.numeric(rua),
+        predio =  as.numeric(predio),
+        apto =  as.numeric(apto)) %>%
+    select( seller_type, "seller"=nome_da_loja, "produto"=nome_do_item, sku, area:apto,
+            "barcode"=codigo_de_barras, local,
             price, valor_total,
             "no_estoque"=cd_olist_barueri_no_estoque,
             "reservado"=cd_olist_barueri_reservado,
@@ -644,6 +682,17 @@ estoca_add_etl <- estoca_add %>%
             "vendas"=cd_olist_barueri_vendas,
             "dias_stock"=cd_olist_barueri_dias_de_estoque
     )
+
+estoca_add_etl %>%
+    filter(rua == 28, between( x = predio, left = 20, right = 38)) %>%
+    count( wt = disponivel)
+
+estoca_add_etl %>%
+    count(area, nivel, wt = disponivel, sort = T) %>%
+    pivot_wider( names_from = nivel, values_from = n, values_fill = 0)
+
+estoca_add_etl %>%
+    filter(area =="P1", nivel=="F") %>% select(local) %>% distinct() %>% pull() %>% clipr::write_clip()
 
 # Resumo stock sem 3P
 estoca_add_etl %>%
@@ -736,7 +785,8 @@ estoca_add_etl %>%
     summarise( ads = n_distinct(local), .groups = "drop") %>%
     filter( area == "R1", ads >=2) %>% view()
 
-
+estoca_add_etl %>%
+    filter(rua == "028")
 
 
 # Vendas geral Olist-------------------------------------------------------
